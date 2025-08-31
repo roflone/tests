@@ -17,5 +17,5 @@ pyyaml==6.0
 pandas
 aiohttp
 openpyxl
-remnawave_api==1.1.3
-
+xlsxwriter
+remnawave==2.1.1
