@@ -19,3 +19,4 @@ aiohttp
 openpyxl
 xlsxwriter
 remnawave==2.1.1
+python-telegram-bot
