@@ -18,5 +18,6 @@ pandas
 aiohttp
 openpyxl
 xlsxwriter
-remnawave==2.1.1
+remnawave==2.3.2
 python-telegram-bot
+
