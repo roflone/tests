@@ -68,21 +68,6 @@ pad_right() {
   return 0
 }
 
-flag_of() {
-  local cc="$1" i ch n oct out=""
-  cc="$(printf '%s' "$cc" | tr '[:lower:]' '[:upper:]')"
-  [[ "$cc" == "UK" ]] && cc="GB"
-  [[ "$cc" =~ ^[A-Z]{2}$ ]] || return 0
-  for ((i = 0; i < 2; i++)); do
-    ch="${cc:i:1}"
-    printf -v n '%d' "'$ch"
-    (( n < 0 )) && n=$((n + 256))
-    printf -v oct '%03o' $((0xA6 + n - 65))
-    out+="\\xf0\\x9f\\x87\\${oct}"
-  done
-  printf '%b' "$out"
-}
-
 section() {
   printf '\n'
   printf '  %s%s%s\n' "$BOLD" "$CYAN" "$1" "$RESET"
@@ -395,9 +380,35 @@ cpu_info() {
 
 # ── Страны ──────────────────────────────────────────────────────────────────
 
+col_at() {
+  local hay="$1" needle="$2" prefix
+  prefix="${hay%%"$needle"*}"
+  if [[ "$prefix" == "$hay" ]]; then
+    printf '%s' "-1"
+  else
+    printf '%s' "${#prefix}"
+  fi
+}
+
+field_slice() {
+  local s="$1" start="$2" end="$3" part len
+  len="${#s}"
+  (( start < 0 )) && start=0
+  (( start > len )) && start=$len
+  if (( end < 0 || end > len )); then
+    end=$len
+  fi
+  (( end < start )) && end=$start
+  part="${s:start:end-start}"
+  part="${part#"${part%%[![:space:]]*}"}"
+  part="${part%"${part##*[![:space:]]}"}"
+  printf '%s' "$part"
+}
+
 region_info() {
-  local raw table line code name ipv4 ipv6 flag label width=16 n i nf
-  local -a fields rows=()
+  local raw table line header name ipv4 ipv6 width=16 n
+  local country_at ipv4_at ipv6_at code
+  local -a rows=()
   section "Страны по сервисам"
   if ! command -v curl >/dev/null 2>&1; then
     warn "Нет curl, таблицу стран не получил."
@@ -421,36 +432,35 @@ region_info() {
     warn "Таблица стран не получена."
     return 0
   fi
-  while IFS= read -r line; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [[ -z "$line" ]] && continue
-    read -r -a fields <<<"$line"
-    nf="${#fields[@]}"
-    (( nf < 4 )) && continue
-    code="${fields[0]}"
-    [[ "$code" == "Code" ]] && continue
-    [[ "$code" =~ ^[A-Za-z]{2}$ ]] || continue
-    ipv6="${fields[nf - 1]}"
-    ipv4="${fields[nf - 2]}"
-    name=""
-    for ((i = 1; i < nf - 2; i++)); do
-      name+="${fields[i]} "
-    done
-    name="${name%"${name##*[![:space:]]}"}"
-    flag="$(flag_of "$code")"
-    if [[ -n "$flag" ]]; then
-      label="${flag}  ${name}"
-    else
-      label="$name"
-    fi
-    n="$(cols "$label")"
-    (( n > width )) && width=$((n))
-    rows+=("${code}"$'\t'"${label}"$'\t'"${ipv4}"$'\t'"${ipv6}")
-  done <<<"$table"
-  if (( ${#rows[@]} == 0 )); then
+  header="$(printf '%s\n' "$table" | awk '/^Code[[:space:]]+Country/ { print; exit }')"
+  country_at="$(col_at "$header" "Country")"
+  ipv4_at="$(col_at "$header" "% IPv4")"
+  [[ "$ipv4_at" == "-1" ]] && ipv4_at="$(col_at "$header" "IPv4")"
+  ipv6_at="$(col_at "$header" "% IPv6")"
+  [[ "$ipv6_at" == "-1" ]] && ipv6_at="$(col_at "$header" "IPv6")"
+  if [[ "$country_at" == "-1" || "$ipv4_at" == "-1" || "$ipv6_at" == "-1" ]]; then
     warn "Таблица стран не разобралась."
     printf '%s\n' "$table" | sed 's/^/  /'
+    return 0
+  fi
+  while IFS= read -r line; do
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line// /}" ]] && continue
+    [[ "$line" == "$header" ]] && continue
+    code="$(field_slice "$line" 0 "$country_at")"
+    [[ "$code" =~ ^[A-Za-z]{2}$ ]] || continue
+    name="$(field_slice "$line" "$country_at" "$ipv4_at")"
+    ipv4="$(field_slice "$line" "$ipv4_at" "$ipv6_at")"
+    ipv6="$(field_slice "$line" "$ipv6_at" -1)"
+    [[ -z "$name" ]] && name="$code"
+    [[ -z "$ipv4" ]] && ipv4="—"
+    [[ -z "$ipv6" ]] && ipv6="—"
+    n="$(cols "$name")"
+    (( n > width )) && width=$n
+    rows+=("${name}"$'\t'"${ipv4}"$'\t'"${ipv6}")
+  done <<<"$table"
+  if (( ${#rows[@]} == 0 )); then
+    warn "Таблица стран пустая."
     return 0
   fi
   width=$((width + 2))
@@ -461,9 +471,9 @@ region_info() {
   pad_right "IPv6" 8
   printf '%s\n' "$RESET"
   for line in "${rows[@]}"; do
-    IFS=$'\t' read -r code label ipv4 ipv6 <<<"$line"
+    IFS=$'\t' read -r name ipv4 ipv6 <<<"$line"
     printf '  '
-    pad_label "$label" "$width"
+    pad_label "$name" "$width"
     pad_right "$ipv4" 8
     printf '  '
     pad_right "$ipv6" 8
@@ -493,15 +503,27 @@ multi_info() {
     warn "Блок Multination пустой."
     return 0
   fi
+  local block="" title
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
+    if [[ "$line" =~ ^---(.+)---$ ]]; then
+      title="${BASH_REMATCH[1]}"
+      if [[ "$title" == "Game" ]]; then
+        block="game"
+      else
+        block=""
+      fi
+      continue
+    fi
+    [[ "$block" == "game" ]] && continue
     [[ "$line" == *:* ]] || continue
     name="${line%%:*}"
     name="${name%"${name##*[![:space:]]}"}"
     n="$(cols "$name")"
     (( n + 2 > width )) && width=$((n + 2))
   done <<<"$raw"
+  block=""
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
@@ -509,9 +531,18 @@ multi_info() {
     [[ "$line" =~ ^=+\ *\[?\ *Multination ]] && continue
     [[ "$line" =~ ^=+$ ]] && continue
     if [[ "$line" =~ ^---(.+)---$ ]]; then
-      printf '\n  %s%s%s\n' "$CYAN" "${BASH_REMATCH[1]}" "$RESET"
+      title="${BASH_REMATCH[1]}"
+      if [[ "$title" == "Game" ]]; then
+        block="game"
+      elif [[ "$title" == "Forum" ]]; then
+        block=""
+      else
+        block=""
+        printf '\n  %s%s%s\n' "$CYAN" "$title" "$RESET"
+      fi
       continue
     fi
+    [[ "$block" == "game" ]] && continue
     if [[ "$line" == *:* ]]; then
       name="${line%%:*}"
       name="${name%"${name##*[![:space:]]}"}"
