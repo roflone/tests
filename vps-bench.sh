@@ -459,7 +459,15 @@ choose() {
   done
 }
 
+if [[ -t 1 ]]; then
+  clear
+fi
+
 choose
+
+if [[ -t 1 ]]; then
+  clear
+fi
 
 VCPU="$(nproc)"
 CPU_MODEL="$(awk -F: '/model name/ { gsub(/^[ \t]+/, "", $2); print $2; exit }' /proc/cpuinfo)"
