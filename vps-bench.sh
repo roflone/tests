@@ -70,7 +70,7 @@ pad_right() {
 
 section() {
   printf '\n'
-  printf '  %s%s%s\n' "$BOLD" "$CYAN" "$1" "$RESET"
+  printf '  %s%s%s%s\n' "$BOLD" "$CYAN" "$1" "$RESET"
   printf '  %s%s%s\n' "$GRAY" "────────────────────────────────────────" "$RESET"
 }
 
@@ -438,11 +438,13 @@ region_info() {
   [[ "$ipv4_at" == "-1" ]] && ipv4_at="$(col_at "$header" "IPv4")"
   ipv6_at="$(col_at "$header" "% IPv6")"
   [[ "$ipv6_at" == "-1" ]] && ipv6_at="$(col_at "$header" "IPv6")"
-  if [[ "$country_at" == "-1" || "$ipv4_at" == "-1" || "$ipv6_at" == "-1" ]]; then
+  if [[ "$country_at" == "-1" || "$ipv4_at" == "-1" ]]; then
     warn "Таблица стран не разобралась."
     printf '%s\n' "$table" | sed 's/^/  /'
     return 0
   fi
+  local has_ipv6=0
+  [[ "$ipv6_at" != "-1" ]] && has_ipv6=1
   while IFS= read -r line; do
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "${line// /}" ]] && continue
@@ -450,8 +452,13 @@ region_info() {
     code="$(field_slice "$line" 0 "$country_at")"
     [[ "$code" =~ ^[A-Za-z]{2}$ ]] || continue
     name="$(field_slice "$line" "$country_at" "$ipv4_at")"
-    ipv4="$(field_slice "$line" "$ipv4_at" "$ipv6_at")"
-    ipv6="$(field_slice "$line" "$ipv6_at" -1)"
+    if (( has_ipv6 )); then
+      ipv4="$(field_slice "$line" "$ipv4_at" "$ipv6_at")"
+      ipv6="$(field_slice "$line" "$ipv6_at" -1)"
+    else
+      ipv4="$(field_slice "$line" "$ipv4_at" -1)"
+      ipv6=""
+    fi
     [[ -z "$name" ]] && name="$code"
     [[ -z "$ipv4" ]] && ipv4="—"
     [[ -z "$ipv6" ]] && ipv6="—"
@@ -467,16 +474,23 @@ region_info() {
   printf '  %s' "$DIM"
   pad_label "Страна" "$width"
   pad_right "IPv4" 8
-  printf '  '
-  pad_right "IPv6" 8
+  if (( has_ipv6 )); then
+    printf '  '
+    pad_right "IPv6" 8
+  fi
   printf '%s\n' "$RESET"
   for line in "${rows[@]}"; do
     IFS=$'\t' read -r name ipv4 ipv6 <<<"$line"
     printf '  '
     pad_label "$name" "$width"
+    printf '%s' "$GREEN"
     pad_right "$ipv4" 8
-    printf '  '
-    pad_right "$ipv6" 8
+    printf '%s' "$RESET"
+    if (( has_ipv6 )); then
+      printf '  %s' "$GREEN"
+      pad_right "$ipv6" 8
+      printf '%s' "$RESET"
+    fi
     printf '\n'
   done
 }
