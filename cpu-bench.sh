@@ -46,6 +46,35 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+LABEL_WIDTH=12
+
+# Ширина в символах, не в байтах. Иначе «Все потоки» слипается с числом.
+cols() {
+  local s="$1" i n=0 code byte
+  local len=${#s}
+  for ((i = 0; i < len; i++)); do
+    byte="${s:i:1}"
+    printf -v code '%d' "'$byte" 2>/dev/null || code=0
+    if (( code < 0 )); then
+      code=$((code + 256))
+    fi
+    # Продолжение UTF-8 (128–191) не занимает отдельную колонку.
+    if (( code < 128 || code >= 192 )); then
+      n=$((n + 1))
+    fi
+  done
+  printf '%s' "$n"
+}
+
+pad_label() {
+  local text="$1" n pad
+  n="$(cols "$text")"
+  printf '%s' "$text"
+  pad=$((LABEL_WIDTH - n))
+  (( pad > 0 )) && printf '%*s' "$pad" ''
+  return 0
+}
+
 read_cpu() {
   awk '/^cpu / {
     total = 0
@@ -98,7 +127,9 @@ spin_test() {
   PIDS+=("$pid")
 
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\r  %s%-16s%s %s%s%s ' "$DIM" "$label" "$RESET" "$CYAN" "${frames[$((i % 4))]}" "$RESET"
+    printf '\r  %s' "$DIM"
+    pad_label "$label"
+    printf '%s %s%s%s ' "$RESET" "$CYAN" "${frames[$((i % 4))]}" "$RESET"
     i=$((i + 1))
     sleep 0.12
   done
@@ -116,7 +147,9 @@ spin_test() {
 }
 
 line() {
-  printf '  %s%-16s%s' "$DIM" "$1" "$RESET"
+  printf '  %s' "$DIM"
+  pad_label "$1"
+  printf '%s' "$RESET"
   shift
   printf '%s\n' "$*"
 }
@@ -133,13 +166,17 @@ sysbench cpu --threads="$VCPU" --time=3 --report-interval=0 run >/dev/null
 
 spin_test 1 15 "1 поток"
 SINGLE="$RESULT"
-printf '  %s%-16s%s%s%.2f%s оп/с\n' "$DIM" "1 поток" "$RESET" "$BOLD" "$SINGLE" "$RESET"
+printf '  %s' "$DIM"
+pad_label "1 поток"
+printf '%s%s%10.2f%s оп/с\n' "$RESET" "$BOLD" "$SINGLE" "$RESET"
 
 read -r STEAL_TOTAL_A STEAL_A < <(read_cpu)
 spin_test "$VCPU" 15 "Все потоки"
 ALL="$RESULT"
 read -r STEAL_TOTAL_B STEAL_B < <(read_cpu)
-printf '  %s%-16s%s%s%.2f%s оп/с\n' "$DIM" "Все потоки" "$RESET" "$BOLD" "$ALL" "$RESET"
+printf '  %s' "$DIM"
+pad_label "Все потоки"
+printf '%s%s%10.2f%s оп/с\n' "$RESET" "$BOLD" "$ALL" "$RESET"
 
 EFFICIENCY="$(awk -v all="$ALL" -v one="$SINGLE" -v cpu="$VCPU" 'BEGIN {
   if (one <= 0 || cpu <= 0) { print "0.0"; exit }
@@ -166,13 +203,17 @@ STEAL_GRADE="$(awk -v s="$STEAL" 'BEGIN {
 }')"
 
 printf '\n'
-printf '  %s%-16s%s' "$DIM" "Масштаб" "$RESET"
+printf '  %s' "$DIM"
+pad_label "Масштаб"
+printf '%s' "$RESET"
 bar "$EFFICIENCY" "$(grade_color "$EFF_GRADE")"
-printf '  %s%s%%%s  %s%s%s\n' "$BOLD" "$EFFICIENCY" "$RESET" "$(grade_color "$EFF_GRADE")" "$EFF_GRADE" "$RESET"
+printf '  %s%6.1f%%%s  %s%s%s\n' "$BOLD" "$EFFICIENCY" "$RESET" "$(grade_color "$EFF_GRADE")" "$EFF_GRADE" "$RESET"
 
-printf '  %s%-16s%s' "$DIM" "CPU steal" "$RESET"
+printf '  %s' "$DIM"
+pad_label "CPU steal"
+printf '%s' "$RESET"
 bar "$STEAL" "$(grade_color "$STEAL_GRADE")"
-printf '  %s%s%%%s  %s%s%s\n' "$BOLD" "$STEAL" "$RESET" "$(grade_color "$STEAL_GRADE")" "$STEAL_GRADE" "$RESET"
+printf '  %s%6.2f%%%s  %s%s%s\n' "$BOLD" "$STEAL" "$RESET" "$(grade_color "$STEAL_GRADE")" "$STEAL_GRADE" "$RESET"
 
 VERDICT="$(awk -v e="$EFFICIENCY" -v s="$STEAL" 'BEGIN {
   if (e >= 75 && s < 5) print "CPU работает хорошо"
