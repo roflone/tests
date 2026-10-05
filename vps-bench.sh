@@ -59,6 +59,30 @@ pad_label() {
   return 0
 }
 
+pad_right() {
+  local text="$1" width="$2" n pad
+  n="$(cols "$text")"
+  pad=$((width - n))
+  (( pad > 0 )) && printf '%*s' "$pad" ''
+  printf '%s' "$text"
+  return 0
+}
+
+flag_of() {
+  local cc="$1" i ch n oct out=""
+  cc="$(printf '%s' "$cc" | tr '[:lower:]' '[:upper:]')"
+  [[ "$cc" == "UK" ]] && cc="GB"
+  [[ "$cc" =~ ^[A-Z]{2}$ ]] || return 0
+  for ((i = 0; i < 2; i++)); do
+    ch="${cc:i:1}"
+    printf -v n '%d' "'$ch"
+    (( n < 0 )) && n=$((n + 256))
+    printf -v oct '%03o' $((0xA6 + n - 65))
+    out+="\\xf0\\x9f\\x87\\${oct}"
+  done
+  printf '%b' "$out"
+}
+
 section() {
   printf '\n'
   printf '  %s%s%s\n' "$BOLD" "$CYAN" "$1" "$RESET"
@@ -156,7 +180,7 @@ iperf_mbps() {
 speed_one() {
   local server="$1" port="$2" name="$3" lat up dl
   ping -c 1 -W 2 "$server" >/dev/null 2>&1 || return 1
-  lat="$(ping -c 3 -W 2 "$server" 2>/dev/null | awk -F/ '/avg/ {printf "%.2f ms", $5; exit}')"
+  lat="$(ping -c 3 -W 2 "$server" 2>/dev/null | awk -F/ '/avg/ {printf "%.2f", $5; exit}')"
   up=""
   dl=""
   if timeout 25 iperf3 -c "$server" -p "$port" -t 10 -O 3 -f m -P 4 >"/tmp/vps-bench-iperf-$$" 2>/dev/null; then
@@ -168,7 +192,28 @@ speed_one() {
   fi
   rm -f "/tmp/vps-bench-iperf-$$"
   [[ -z "$up" || -z "$dl" || "$up" == "0" || "$dl" == "0" ]] && return 1
-  printf '\r\033[2K  %-22s %10s Mbit/s %10s Mbit/s %12s\n' "$name" "$up" "$dl" "${lat:-n/a}"
+  printf '\r\033[2K'
+  speed_row "$name" "$up" "$dl" "${lat:-n/a}"
+}
+
+speed_row() {
+  local name="$1" up="$2" dl="$3" lat="$4"
+  printf '  '
+  pad_label "$name" 22
+  printf '%s' "$BOLD"
+  pad_right "$up" 7
+  printf '%s %sМбит/с%s  ' "$RESET" "$DIM" "$RESET"
+  printf '%s' "$BOLD"
+  pad_right "$dl" 7
+  printf '%s %sМбит/с%s  ' "$RESET" "$DIM" "$RESET"
+  if [[ "$lat" == "n/a" ]]; then
+    pad_right "$lat" 9
+    printf '\n'
+  else
+    printf '%s' "$BOLD"
+    pad_right "$lat" 6
+    printf '%s %sмс%s\n' "$RESET" "$DIM" "$RESET"
+  fi
 }
 
 speed_info() {
@@ -186,7 +231,14 @@ speed_info() {
     warn "Нет iperf3 или ping, скорость не мерял."
     return 0
   fi
-  printf '  %s%-22s %16s %16s %12s%s\n' "$DIM" "Узел" "Отдача" "Приём" "Пинг" "$RESET"
+  printf '  %s' "$DIM"
+  pad_label "Узел" 22
+  pad_right "Отдача" 7
+  printf ' Мбит/с  '
+  pad_right "Приём" 7
+  printf ' Мбит/с  '
+  pad_right "Пинг" 6
+  printf ' мс%s\n' "$RESET"
   for item in "${servers[@]}"; do
     IFS=':' read -r server port name <<<"$item"
     status_line "Скорость: ${name}"
@@ -344,19 +396,22 @@ cpu_info() {
 # ── Страны ──────────────────────────────────────────────────────────────────
 
 region_info() {
-  local raw table
+  local raw table line code name ipv4 ipv6 flag label width=16 n i nf
+  local -a fields rows=()
   section "Страны по сервисам"
   if ! command -v curl >/dev/null 2>&1; then
     warn "Нет curl, таблицу стран не получил."
     return 0
   fi
-  note "Спрашиваю сервисы, откуда виден этот IP..."
+  status_line "Спрашиваю сервисы, откуда виден этот IP..."
   if ! curl -fsSL --max-time 30 -A "curl/8.0" "https://ipregion.xyz" -o /tmp/vps-bench-region-$$; then
+    printf '\r\033[2K'
     warn "Скрипт стран не скачался."
     return 0
   fi
   raw="$(bash /tmp/vps-bench-region-$$ 2>/dev/null | strip_ansi || true)"
   rm -f /tmp/vps-bench-region-$$
+  printf '\r\033[2K'
   table="$(printf '%s\n' "$raw" | awk '
     /^Code[[:space:]]+Country/ { grab=1 }
     grab { print }
@@ -366,25 +421,74 @@ region_info() {
     warn "Таблица стран не получена."
     return 0
   fi
-  printf '%s\n' "$table" | sed 's/^/  /'
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    read -r -a fields <<<"$line"
+    nf="${#fields[@]}"
+    (( nf < 4 )) && continue
+    code="${fields[0]}"
+    [[ "$code" == "Code" ]] && continue
+    [[ "$code" =~ ^[A-Za-z]{2}$ ]] || continue
+    ipv6="${fields[nf - 1]}"
+    ipv4="${fields[nf - 2]}"
+    name=""
+    for ((i = 1; i < nf - 2; i++)); do
+      name+="${fields[i]} "
+    done
+    name="${name%"${name##*[![:space:]]}"}"
+    flag="$(flag_of "$code")"
+    if [[ -n "$flag" ]]; then
+      label="${flag}  ${name}"
+    else
+      label="$name"
+    fi
+    n="$(cols "$label")"
+    (( n > width )) && width=$((n))
+    rows+=("${code}"$'\t'"${label}"$'\t'"${ipv4}"$'\t'"${ipv6}")
+  done <<<"$table"
+  if (( ${#rows[@]} == 0 )); then
+    warn "Таблица стран не разобралась."
+    printf '%s\n' "$table" | sed 's/^/  /'
+    return 0
+  fi
+  width=$((width + 2))
+  printf '  %s' "$DIM"
+  pad_label "Страна" "$width"
+  pad_right "IPv4" 8
+  printf '  '
+  pad_right "IPv6" 8
+  printf '%s\n' "$RESET"
+  for line in "${rows[@]}"; do
+    IFS=$'\t' read -r code label ipv4 ipv6 <<<"$line"
+    printf '  '
+    pad_label "$label" "$width"
+    pad_right "$ipv4" 8
+    printf '  '
+    pad_right "$ipv6" 8
+    printf '\n'
+  done
 }
 
 # ── Multination ─────────────────────────────────────────────────────────────
 
 multi_info() {
-  local raw line name rest
+  local raw line name rest width=28 n
   section "Multination"
   if ! command -v curl >/dev/null 2>&1; then
     warn "Нет curl, проверку сервисов не запустил."
     return 0
   fi
-  note "Проверяю сервисы. Это несколько минут."
+  status_line "Проверяю сервисы. Это несколько минут."
   if ! curl -fsSL --max-time 60 -L "https://git.io/JRw8R" -o /tmp/vps-bench-multi-$$; then
+    printf '\r\033[2K'
     warn "Скрипт проверки сервисов не скачался."
     return 0
   fi
   raw="$(echo 0 | bash /tmp/vps-bench-multi-$$ -E en -M 4 2>/dev/null | strip_ansi | awk '/^=+\[ Multination \]=+$/,/^=+$/' || true)"
   rm -f /tmp/vps-bench-multi-$$
+  printf '\r\033[2K'
   if [[ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]]; then
     warn "Блок Multination пустой."
     return 0
@@ -392,15 +496,29 @@ multi_info() {
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
+    [[ "$line" == *:* ]] || continue
+    name="${line%%:*}"
+    name="${name%"${name##*[![:space:]]}"}"
+    n="$(cols "$name")"
+    (( n + 2 > width )) && width=$((n + 2))
+  done <<<"$raw"
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" ]] && continue
     [[ "$line" =~ ^=+\ *\[?\ *Multination ]] && continue
     [[ "$line" =~ ^=+$ ]] && continue
+    if [[ "$line" =~ ^---(.+)---$ ]]; then
+      printf '\n  %s%s%s\n' "$CYAN" "${BASH_REMATCH[1]}" "$RESET"
+      continue
+    fi
     if [[ "$line" == *:* ]]; then
       name="${line%%:*}"
+      name="${name%"${name##*[![:space:]]}"}"
       rest="${line#*:}"
       rest="${rest#"${rest%%[![:space:]]*}"}"
       printf '  %s' "$DIM"
-      pad_label "$name" 28
+      pad_label "$name" "$width"
       printf '%s' "$RESET"
       if [[ "$rest" == Yes* || "$rest" == Available* || "$rest" == Unlock* ]]; then
         printf '%s%s%s\n' "$GREEN" "$rest" "$RESET"
