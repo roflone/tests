@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сводка VPS: сервер, CPU, диск, три узла скорости, страны по сервисам, Multination.
+# Сводка VPS: CPU и диск, скорость, страны по сервисам, Multination.
 set -euo pipefail
 
 export LC_ALL=C
@@ -98,31 +98,6 @@ strip_ansi() {
   sed -E 's/\x1B\[[0-9;?]*[A-Za-z]//g; s/\r//g'
 }
 
-# ── Сервер ──────────────────────────────────────────────────────────────────
-
-server_info() {
-  local up_s days hours mins org city country region json
-  section "Сервер"
-  up_s="$(awk '{printf "%d", $1}' /proc/uptime)"
-  days=$((up_s / 86400))
-  hours=$(((up_s % 86400) / 3600))
-  mins=$(((up_s % 3600) / 60))
-  row "Аптайм" "${days} дн, ${hours} ч ${mins} мин"
-
-  json="$(curl -fsSL --max-time 12 "https://ipinfo.io/json" 2>/dev/null || true)"
-  org="$(printf '%s' "$json" | awk -F'"' '/"org"/ {print $4; exit}')"
-  city="$(printf '%s' "$json" | awk -F'"' '/"city"/ {print $4; exit}')"
-  country="$(printf '%s' "$json" | awk -F'"' '/"country"/ {print $4; exit}')"
-  region="$(printf '%s' "$json" | awk -F'"' '/"region"/ {print $4; exit}')"
-  row "Организация" "${org:-не определилась}"
-  if [[ -n "$city" && -n "$country" ]]; then
-    row "Локация" "${city} / ${country}"
-  else
-    row "Локация" "не определилась"
-  fi
-  row "Регион" "${region:-не определился}"
-}
-
 # ── Диск ────────────────────────────────────────────────────────────────────
 
 io_once() {
@@ -142,12 +117,11 @@ io_to_mbs() {
   }'
 }
 
-disk_info() {
+disk_line() {
   local free io1 io2 io3 a b c avg
-  section "Диск"
   free="$(df -m /tmp | awk 'NR==2 {print $4}')"
   if [[ -z "$free" || "$free" -le 1024 ]]; then
-    warn "Мало места в /tmp, среднюю скорость диска не мерял."
+    warn "Мало места в /tmp, скорость диска не мерял."
     return 0
   fi
   status_line "Диск, прогон 1 из 3"
@@ -165,10 +139,10 @@ disk_info() {
     return 0
   fi
   avg="$(awk -v a="$a" -v b="$b" -v c="$c" 'BEGIN {printf "%.1f", (a+b+c)/3}')"
-  row "Диск, среднее" "${avg} MB/s"
+  row "Диск" "${avg} MB/s"
 }
 
-# ── Скорость, три успешных узла ─────────────────────────────────────────────
+# ── Скорость ────────────────────────────────────────────────────────────────
 
 iperf_mbps() {
   local file="$1" role="$2" speed
@@ -203,16 +177,6 @@ speed_info() {
     'st.spb.ertelecom.ru:5203:SPB, Er-com'
     'mskst.st.mtsws.net:3333:Moscow, MTS'
     'voronezh-speedtest.corbina.net:5203:Voronezh, Beeline'
-    'st.nn.ertelecom.ru:5203:N.Novgorod'
-    'speedtest-kaliningrad-01.corbina.net:5201:Kaliningrad'
-    'st.kzn.ertelecom.ru:5203:Kazan, Er-com'
-    'st.samara.ertelecom.ru:5203:Samara, Er-com'
-    'st.rostov.ertelecom.ru:5203:Rostov-on-Don'
-    'st.volgograd.ertelecom.ru:5203:Volgograd'
-    'st.chel.ertelecom.ru:5203:Chelyabinsk'
-    'st.omsk.ertelecom.ru:5203:Omsk'
-    'st.krsk.ertelecom.ru:5203:Krasnoyarsk'
-    'st.irkutsk.ertelecom.ru:5203:Irkutsk, Er-com'
     'iperf-ams-nl.eranium.net:5201:NL Amsterdam'
     'speedtest.fra1.de.leaseweb.net:5201:DE Frankfurt'
   )
@@ -228,7 +192,6 @@ speed_info() {
     status_line "Скорость: ${name}"
     if speed_one "$server" "$port" "$name"; then
       got=$((got + 1))
-      (( got >= 3 )) && break
     fi
   done
   printf '\r\033[2K'
@@ -304,12 +267,13 @@ cpu_info() {
   local single all eff steal eff_grade steal_grade verdict verdict_color
   local steal_a steal_b total_a total_b
   section "CPU"
+  row "Процессор" "${CPU_MODEL}"
+  row "vCPU" "${VCPU}"
+  disk_line
   if ! ensure_pkg sysbench sysbench; then
     warn "Нет sysbench, CPU не мерял."
     return 0
   fi
-  row "Процессор" "${CPU_MODEL}"
-  row "vCPU" "${VCPU}"
   printf '\n'
   note "Прогрев ядер..."
   sysbench cpu --threads="$VCPU" --time=3 --report-interval=0 run >/dev/null
@@ -468,12 +432,10 @@ choose() {
   printf '  %s%s%s\n' "$GRAY" "────────────────────────────────────────" "$RESET"
   printf '\n'
   printf '  %s%s1%s  всё\n' "$BOLD" "$CYAN" "$RESET"
-  printf '  %s2%s  сервер\n' "$DIM" "$RESET"
-  printf '  %s3%s  CPU\n' "$DIM" "$RESET"
-  printf '  %s4%s  диск\n' "$DIM" "$RESET"
+  printf '  %s2%s  CPU и диск\n' "$DIM" "$RESET"
+  printf '  %s3%s  страны\n' "$DIM" "$RESET"
+  printf '  %s4%s  Multination\n' "$DIM" "$RESET"
   printf '  %s5%s  скорость\n' "$DIM" "$RESET"
-  printf '  %s6%s  страны\n' "$DIM" "$RESET"
-  printf '  %s7%s  Multination\n' "$DIM" "$RESET"
   printf '\n'
   printf '  %sНомера через пробел, Enter — всё:%s ' "$DIM" "$RESET"
   IFS= read -r choice </dev/tty || choice=""
@@ -484,12 +446,10 @@ choose() {
   fi
   for item in $choice; do
     case "$item" in
-      2) PICKED+=" server" ;;
-      3) PICKED+=" cpu" ;;
-      4) PICKED+=" disk" ;;
+      2) PICKED+=" cpu" ;;
+      3) PICKED+=" region" ;;
+      4) PICKED+=" multi" ;;
       5) PICKED+=" speed" ;;
-      6) PICKED+=" region" ;;
-      7) PICKED+=" multi" ;;
       *)
         warn "Не понял «${item}». Запускаю всё."
         RUN_ALL=1
@@ -505,10 +465,8 @@ VCPU="$(nproc)"
 CPU_MODEL="$(awk -F: '/model name/ { gsub(/^[ \t]+/, "", $2); print $2; exit }' /proc/cpuinfo)"
 CPU_MODEL="${CPU_MODEL:-unknown}"
 
-want server && server_info
 want cpu && cpu_info
-want disk && disk_info
-want speed && speed_info
 want region && region_info
 want multi && multi_info
+want speed && speed_info
 printf '\n'
