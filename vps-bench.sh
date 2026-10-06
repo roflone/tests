@@ -28,7 +28,7 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do
     kill "$pid" 2>/dev/null || true
   done
-  rm -f /tmp/vps-bench-io-$$ /tmp/vps-bench-iperf-$$ /tmp/vps-bench-region-$$ /tmp/vps-bench-multi-$$
+  rm -f /tmp/vps-bench-io-$$ /tmp/vps-bench-iperf-$$ /tmp/vps-bench-region-$$ /tmp/vps-bench-multi-$$ /tmp/vps-bench-pkg-$$
 }
 trap cleanup EXIT INT TERM
 
@@ -92,14 +92,45 @@ status_line() {
   printf '\r\033[2K  %s%s%s' "$DIM" "$1" "$RESET"
 }
 
+run_pkg() {
+  local logf="/tmp/vps-bench-pkg-$$" err
+  if ! "$@" >"$logf" 2>&1; then
+    err="$(tail -n 1 "$logf" 2>/dev/null || true)"
+    rm -f "$logf"
+    warn "Не поставилось: ${err:-ошибка пакетного менеджера}"
+    return 1
+  fi
+  rm -f "$logf"
+}
+
 ensure_pkg() {
   local cmd="$1" pkg="$2"
   command -v "$cmd" >/dev/null 2>&1 && return 0
-  if [[ "$(id -u)" -eq 0 ]] && command -v apt-get >/dev/null 2>&1; then
-    note "Ставлю ${pkg}..."
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null
+  if [[ "$(id -u)" -ne 0 ]]; then
+    warn "Нет ${pkg}. Запусти от root, тогда поставлю сам."
+    return 1
   fi
+  note "Ставлю ${pkg}..."
+  if command -v apt-get >/dev/null 2>&1; then
+    run_pkg apt-get update -qq || return 1
+    run_pkg env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" || return 1
+  elif command -v dnf >/dev/null 2>&1; then
+    if [[ "$pkg" == "sysbench" ]]; then
+      run_pkg dnf install -y -q epel-release || true
+    fi
+    run_pkg dnf install -y -q "$pkg" || return 1
+  elif command -v yum >/dev/null 2>&1; then
+    if [[ "$pkg" == "sysbench" ]]; then
+      run_pkg yum install -y -q epel-release || true
+    fi
+    run_pkg yum install -y -q "$pkg" || return 1
+  elif command -v apk >/dev/null 2>&1; then
+    run_pkg apk add --no-cache "$pkg" || return 1
+  else
+    warn "Нет apt, dnf или apk, ${pkg} не во что ставить."
+    return 1
+  fi
+  hash -r || true
   command -v "$cmd" >/dev/null 2>&1
 }
 
