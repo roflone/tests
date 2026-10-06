@@ -103,29 +103,37 @@ run_pkg() {
   rm -f "$logf"
 }
 
+pkg_cmd() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    run_pkg "$@"
+    return
+  fi
+  sudo "$@"
+}
+
 ensure_pkg() {
   local cmd="$1" pkg="$2"
   command -v "$cmd" >/dev/null 2>&1 && return 0
-  if [[ "$(id -u)" -ne 0 ]]; then
-    warn "Нет ${pkg}. Запусти от root, тогда поставлю сам."
+  if [[ "$(id -u)" -ne 0 && "${ALLOW_SUDO:-0}" != "1" ]]; then
+    warn "Нет ${pkg}. Без root не ставлю."
     return 1
   fi
   note "Ставлю ${pkg}..."
   if command -v apt-get >/dev/null 2>&1; then
-    run_pkg apt-get update -qq || return 1
-    run_pkg env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" || return 1
+    pkg_cmd apt-get update -qq || return 1
+    pkg_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" || return 1
   elif command -v dnf >/dev/null 2>&1; then
     if [[ "$pkg" == "sysbench" ]]; then
-      run_pkg dnf install -y -q epel-release || true
+      pkg_cmd dnf install -y -q epel-release || true
     fi
-    run_pkg dnf install -y -q "$pkg" || return 1
+    pkg_cmd dnf install -y -q "$pkg" || return 1
   elif command -v yum >/dev/null 2>&1; then
     if [[ "$pkg" == "sysbench" ]]; then
-      run_pkg yum install -y -q epel-release || true
+      pkg_cmd yum install -y -q epel-release || true
     fi
-    run_pkg yum install -y -q "$pkg" || return 1
+    pkg_cmd yum install -y -q "$pkg" || return 1
   elif command -v apk >/dev/null 2>&1; then
-    run_pkg apk add --no-cache "$pkg" || return 1
+    pkg_cmd apk add --no-cache "$pkg" || return 1
   else
     warn "Нет apt, dnf или apk, ${pkg} не во что ставить."
     return 1
@@ -653,10 +661,38 @@ choose() {
   done
 }
 
+ALLOW_SUDO=0
+
+ask_root() {
+  local choice
+  [[ "$(id -u)" -eq 0 ]] && return 0
+  if [[ ! -r /dev/tty ]]; then
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    note "Не root и нет sudo. Пакеты не поставлю, замеры пойдут как есть."
+    return 0
+  fi
+  printf '\n'
+  printf '  %sСейчас не root.%s\n' "$BOLD" "$RESET"
+  printf '  %sПакеты ставятся только от root. Замеры работают и без него.%s\n' "$DIM" "$RESET"
+  printf '\n'
+  printf '  %s%s1%s  поставить пакеты через sudo\n' "$BOLD" "$CYAN" "$RESET"
+  printf '  %s2%s  продолжить без установки\n' "$DIM" "$RESET"
+  printf '\n'
+  printf '  %sEnter — 1:%s ' "$DIM" "$RESET"
+  IFS= read -r choice </dev/tty || choice=""
+  case "${choice:-1}" in
+    1|y|Y|yes|да|Да) ALLOW_SUDO=1 ;;
+    *) ALLOW_SUDO=0 ;;
+  esac
+}
+
 if [[ -t 1 ]]; then
   clear
 fi
 
+ask_root
 choose
 
 if [[ -t 1 ]]; then
