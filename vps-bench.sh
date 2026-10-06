@@ -114,6 +114,10 @@ pkg_cmd() {
 ensure_pkg() {
   local cmd="$1" pkg="$2"
   command -v "$cmd" >/dev/null 2>&1 && return 0
+  if [[ "${INSTALL_PKGS:-1}" != "1" ]]; then
+    warn "Нет ${pkg}, установку пропустили."
+    return 1
+  fi
   if [[ "$(id -u)" -ne 0 && "${ALLOW_SUDO:-0}" != "1" ]]; then
     warn "Нет ${pkg}. Без root не ставлю."
     return 1
@@ -661,31 +665,43 @@ choose() {
   done
 }
 
+INSTALL_PKGS=1
 ALLOW_SUDO=0
 
 ask_root() {
   local choice
-  [[ "$(id -u)" -eq 0 ]] && return 0
   if [[ ! -r /dev/tty ]]; then
-    return 0
-  fi
-  if ! command -v sudo >/dev/null 2>&1; then
-    note "Не root и нет sudo. Пакеты не поставлю, замеры пойдут как есть."
+    if [[ "$(id -u)" -ne 0 ]]; then
+      INSTALL_PKGS=0
+    fi
     return 0
   fi
   printf '\n'
-  printf '  %sСейчас не root.%s\n' "$BOLD" "$RESET"
+  printf '  %sЗапуск%s\n' "$BOLD" "$RESET"
   printf '  %sПакеты ставятся только от root. Замеры работают и без него.%s\n' "$DIM" "$RESET"
   printf '\n'
-  printf '  %s%s1%s  поставить пакеты через sudo\n' "$BOLD" "$CYAN" "$RESET"
-  printf '  %s2%s  продолжить без установки\n' "$DIM" "$RESET"
+  printf '  %s%s1%s  от root, поставить пакеты\n' "$BOLD" "$CYAN" "$RESET"
+  printf '  %s2%s  без установки пакетов\n' "$DIM" "$RESET"
   printf '\n'
   printf '  %sEnter — 1:%s ' "$DIM" "$RESET"
   IFS= read -r choice </dev/tty || choice=""
   case "${choice:-1}" in
-    1|y|Y|yes|да|Да) ALLOW_SUDO=1 ;;
-    *) ALLOW_SUDO=0 ;;
+    1|y|Y|yes|да|Да)
+      INSTALL_PKGS=1
+      if [[ "$(id -u)" -ne 0 ]]; then
+        if command -v sudo >/dev/null 2>&1; then
+          ALLOW_SUDO=1
+        else
+          INSTALL_PKGS=0
+          warn "sudo нет, пакеты не поставлю."
+        fi
+      fi
+      ;;
+    *)
+      INSTALL_PKGS=0
+      ;;
   esac
+  printf '\n'
 }
 
 if [[ -t 1 ]]; then
