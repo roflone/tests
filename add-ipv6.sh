@@ -324,17 +324,44 @@ disable_ipv6_dhcp_client() {
   done
 }
 
+wait_for_dad() {
+  local i=0 line
+  while [[ "$i" -lt 8 ]]; do
+    line="$(ip -6 addr show dev "${ADDR_IFACE}" scope global 2>/dev/null || true)"
+    if [[ "$line" == *dadfailed* ]]; then
+      return 1
+    fi
+    if [[ "$line" != *tentative* ]]; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  return 2
+}
+
 show_result() {
+  local dad_rc=0
+  wait_for_dad || dad_rc=$?
   echo ""
   ip -6 addr show dev "${ADDR_IFACE}" scope global || true
   echo ""
   ip -6 route show default || true
   echo ""
+  if [[ "$dad_rc" -eq 1 ]]; then
+    log "Сеть отвергла адрес: на интерфейсе он помечен dadfailed."
+    return
+  fi
+  if [[ "$dad_rc" -eq 2 ]]; then
+    log "Адрес завис в tentative. Ядро ещё не разрешило с него отправлять пакеты."
+  fi
   if ping -6 -c 2 -W 3 2606:4700:4700::1111 >/dev/null 2>&1; then
     log "IPv6 наружу отвечает."
   else
     log "Адрес на интерфейсе есть, ping до 2606:4700:4700::1111 не прошёл."
-    log "Сверь адрес и шлюз с панелью хостера."
+    if [[ -n "${ADDR_GATEWAY}" ]]; then
+      log "Проверь шлюз: ping -6 -c 3 ${ADDR_GATEWAY}"
+    fi
   fi
 }
 
