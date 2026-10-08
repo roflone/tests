@@ -458,57 +458,51 @@ region_info() {
     return 0
   fi
   status_line "Спрашиваю сервисы, откуда виден этот IP..."
-  if ! curl -fsSL --max-time 30 -A "curl/8.0" "https://ipregion.xyz" -o /tmp/vps-bench-region-$$; then
+  if ! ensure_pkg jq jq; then
+    printf '\r\033[2K'
+    warn "Нет jq, таблицу стран не получил."
+    return 0
+  fi
+  if ! command -v column >/dev/null 2>&1; then
+    ensure_pkg column bsdextrautils || ensure_pkg column bsdmainutils || true
+  fi
+  if ! command -v column >/dev/null 2>&1; then
+    printf '\r\033[2K'
+    warn "Нет column, таблицу стран не получил."
+    return 0
+  fi
+  if ! curl -fsSL --connect-timeout 10 --max-time 30 -A "curl/8.0" "https://ipregion.xyz" -o /tmp/vps-bench-region-$$; then
     printf '\r\033[2K'
     warn "Скрипт стран не скачался."
     return 0
   fi
-  raw="$(bash /tmp/vps-bench-region-$$ 2>/dev/null | strip_ansi || true)"
+  if command -v timeout >/dev/null 2>&1; then
+    raw="$(timeout 80 bash /tmp/vps-bench-region-$$ -4 -j -g primary -t 4 </dev/null 2>/dev/null || true)"
+  else
+    raw="$(bash /tmp/vps-bench-region-$$ -4 -j -g primary -t 4 </dev/null 2>/dev/null || true)"
+  fi
   rm -f /tmp/vps-bench-region-$$
   printf '\r\033[2K'
-  table="$(printf '%s\n' "$raw" | awk '
-    /^Code[[:space:]]+Country/ { grab=1 }
-    grab { print }
-    grab && NF==0 { exit }
-  ')"
-  if [[ -z "$table" ]]; then
+  table="$(printf '%s\n' "$raw" | jq -r '.results.primary[]?.ipv4 // empty' 2>/dev/null || true)"
+  if [[ -z "$(printf '%s' "$table" | tr -d '[:space:]')" ]]; then
     warn "Таблица стран не получена."
     return 0
   fi
-  header="$(printf '%s\n' "$table" | awk '/^Code[[:space:]]+Country/ { print; exit }')"
-  country_at="$(col_at "$header" "Country")"
-  ipv4_at="$(col_at "$header" "% IPv4")"
-  [[ "$ipv4_at" == "-1" ]] && ipv4_at="$(col_at "$header" "IPv4")"
-  ipv6_at="$(col_at "$header" "% IPv6")"
-  [[ "$ipv6_at" == "-1" ]] && ipv6_at="$(col_at "$header" "IPv6")"
-  if [[ "$country_at" == "-1" || "$ipv4_at" == "-1" ]]; then
-    warn "Таблица стран не разобралась."
-    printf '%s\n' "$table" | sed 's/^/  /'
-    return 0
-  fi
   local has_ipv6=0
-  [[ "$ipv6_at" != "-1" ]] && has_ipv6=1
   while IFS= read -r line; do
-    line="${line%"${line##*[![:space:]]}"}"
-    [[ -z "${line// /}" ]] && continue
-    [[ "$line" == "$header" ]] && continue
-    code="$(field_slice "$line" 0 "$country_at")"
-    [[ "$code" =~ ^[A-Za-z]{2}$ ]] || continue
-    name="$(field_slice "$line" "$country_at" "$ipv4_at")"
-    if (( has_ipv6 )); then
-      ipv4="$(field_slice "$line" "$ipv4_at" "$ipv6_at")"
-      ipv6="$(field_slice "$line" "$ipv6_at" -1)"
-    else
-      ipv4="$(field_slice "$line" "$ipv4_at" -1)"
-      ipv6=""
-    fi
-    [[ -z "$name" ]] && name="$code"
-    [[ -z "$ipv4" ]] && ipv4="—"
-    [[ -z "$ipv6" ]] && ipv6="—"
+    [[ -n "$line" ]] || continue
+    IFS=$'\t' read -r name ipv4 <<<"$line"
+    [[ "$name" =~ ^[A-Z]{2}$ ]] || continue
     n="$(cols "$name")"
     (( n > width )) && width=$n
-    rows+=("${name}"$'\t'"${ipv4}"$'\t'"${ipv6}")
-  done <<<"$table"
+    rows+=("${name}"$'\t'"${ipv4}"$'\t')
+  done < <(printf '%s\n' "$table" | awk '
+    /^[A-Z]{2}$/ { c[$0]++; n++ }
+    END {
+      if (n == 0) exit
+      for (k in c) printf "%s\t%d%%\n", k, int(c[k] * 100 / n + 0.5)
+    }
+  ' | sort -t "$(printf '\t')" -k2,2nr)
   if (( ${#rows[@]} == 0 )); then
     warn "Таблица стран пустая."
     return 0
