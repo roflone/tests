@@ -28,7 +28,7 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do
     kill "$pid" 2>/dev/null || true
   done
-  rm -f /tmp/vps-bench-io-$$ /tmp/vps-bench-iperf-$$ /tmp/vps-bench-region-$$ /tmp/vps-bench-multi-$$ /tmp/vps-bench-pkg-$$
+  rm -f /tmp/vps-bench-io-$$ /tmp/vps-bench-iperf-$$ /tmp/vps-bench-region-$$ /tmp/vps-bench-region-$$.out /tmp/vps-bench-region-$$.err /tmp/vps-bench-multi-$$ /tmp/vps-bench-pkg-$$
 }
 trap cleanup EXIT INT TERM
 
@@ -449,15 +449,15 @@ field_slice() {
 }
 
 region_info() {
-  local raw table line header name ipv4 ipv6 width=16 n
-  local country_at ipv4_at ipv6_at code
+  local table line name ipv4 ipv6 width=16 n
+  local region_sh region_out region_err
   local -a rows=()
   section "Страны по сервисам"
   if ! command -v curl >/dev/null 2>&1; then
     warn "Нет curl, таблицу стран не получил."
     return 0
   fi
-  status_line "Спрашиваю сервисы, откуда виден этот IP..."
+  status_line "Спрашиваю сервисы, откуда виден этот IP. Это около минуты..."
   if ! ensure_pkg jq jq; then
     printf '\r\033[2K'
     warn "Нет jq, таблицу стран не получил."
@@ -471,38 +471,54 @@ region_info() {
     warn "Нет column, таблицу стран не получил."
     return 0
   fi
-  if ! curl -fsSL --connect-timeout 10 --max-time 30 -A "curl/8.0" "https://ipregion.xyz" -o /tmp/vps-bench-region-$$; then
+  region_sh="/tmp/vps-bench-region-$$"
+  region_out="/tmp/vps-bench-region-$$.out"
+  region_err="/tmp/vps-bench-region-$$.err"
+  if ! curl -fsSL --connect-timeout 10 --max-time 30 -A "curl/8.0" "https://ipregion.xyz" -o "$region_sh"; then
     printf '\r\033[2K'
     warn "Скрипт стран не скачался."
     return 0
   fi
+  # Тот же набор, что у ручного запуска: геосервисы и сайты.
+  # Короткий -t 4 и только -g primary оставляли в JSON одни N/A.
+  # LC_ALL=C у бенча ломает разбор ответов, поэтому у дочернего его снимаем.
   if command -v timeout >/dev/null 2>&1; then
-    raw="$(timeout 80 bash /tmp/vps-bench-region-$$ -4 -j -g primary -t 4 </dev/null 2>/dev/null || true)"
+    timeout 240 env -u LC_ALL bash "$region_sh" -4 -j </dev/null >"$region_out" 2>"$region_err" || true
   else
-    raw="$(bash /tmp/vps-bench-region-$$ -4 -j -g primary -t 4 </dev/null 2>/dev/null || true)"
+    env -u LC_ALL bash "$region_sh" -4 -j </dev/null >"$region_out" 2>"$region_err" || true
   fi
-  rm -f /tmp/vps-bench-region-$$
+  rm -f "$region_sh"
   printf '\r\033[2K'
-  table="$(printf '%s\n' "$raw" | jq -r '.results.primary[]?.ipv4 // empty' 2>/dev/null || true)"
-  if [[ -z "$(printf '%s' "$table" | tr -d '[:space:]')" ]]; then
+  if [[ ! -s "$region_out" ]]; then
     warn "Таблица стран не получена."
     return 0
   fi
+  table="$(jq -r '
+    [
+      .results.primary[]?.ipv4,
+      .results.custom[]?.ipv4
+    ]
+    | map(select(type == "string") | gsub("^\\s+|\\s+$"; "") | select(test("^[A-Z]{2}$")))
+    | if length == 0 then empty
+      else
+        (length) as $n
+        | group_by(.)
+        | map({k: .[0], n: length})
+        | sort_by(-.n)[]
+        | "\(.k)\t\((.n * 100 / $n) | round)%"
+      end
+  ' "$region_out" 2>/dev/null || true)"
   local has_ipv6=0
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     IFS=$'\t' read -r name ipv4 <<<"$line"
     [[ "$name" =~ ^[A-Z]{2}$ ]] || continue
     n="$(cols "$name")"
-    (( n > width )) && width=$n
+    if (( n > width )); then
+      width=$n
+    fi
     rows+=("${name}"$'\t'"${ipv4}"$'\t')
-  done < <(printf '%s\n' "$table" | awk '
-    /^[A-Z]{2}$/ { c[$0]++; n++ }
-    END {
-      if (n == 0) exit
-      for (k in c) printf "%s\t%d%%\n", k, int(c[k] * 100 / n + 0.5)
-    }
-  ' | sort -t "$(printf '\t')" -k2,2nr)
+  done <<<"$table"
   if (( ${#rows[@]} == 0 )); then
     warn "Таблица стран пустая."
     return 0
