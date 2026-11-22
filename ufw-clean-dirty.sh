@@ -1,7 +1,8 @@
 #!/bin/bash
 # Чистый адрес: 80 и 443 снаружи.
 # Грязный адрес: SSH отовсюду, панель 3000 только с адреса панели.
-# Входящий IPv6 не открывается. Широкие правила на те же порты снимаются.
+# Входящий IPv6 не открывается.
+# Снимаются широкие правила и старые правила этих портов на других адресах.
 #
 # Запускать по SSH на грязный адрес, от root:
 #   ./ufw-clean-dirty.sh
@@ -84,7 +85,7 @@ ufw allow proto tcp to "$DIRTY" port 22
 ufw allow proto tcp from "$PANEL_IP" to "$DIRTY" port 3000
 ufw deny out proto tcp to any port "$OUT_DENY_PORTS"
 
-mapfile -t nums < <(ufw status numbered | awk -v re="$port_re" '
+mapfile -t nums < <(ufw status numbered | awk -v re="$port_re" -v clean="$CLEAN" -v dirty="$DIRTY" '
   /ALLOW IN/ {
     line = $0
     sub(/^\[ */, "", line)
@@ -95,6 +96,7 @@ mapfile -t nums < <(ufw status numbered | awk -v re="$port_re" '
     sub(/^[0-9]+\][[:space:]]+/, "", rest)
     split(rest, a, /[[:space:]]+/)
     if (a[1] ~ re) print num
+    else if (a[1] ~ /^[0-9.]+$/ && a[1] != clean && a[1] != dirty && a[2] ~ re) print num
   }
 ' | sort -nr)
 
