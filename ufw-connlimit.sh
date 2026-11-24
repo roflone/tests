@@ -141,17 +141,21 @@ drop_rules() {
   rm -f "$tmp"
 }
 
+anchor_present() {
+  grep -qxF -- "$ANCHOR" "$RULES_FILE"
+}
+
 insert_rule() {
   local line=$1 tmp
-  grep -qxF "$ANCHOR" "$RULES_FILE" || {
-    echo "В $RULES_FILE нет стандартной строки ESTABLISHED. Файл не изменён." >&2
-    return 1
-  }
   tmp=$(mktemp)
-  awk -v anchor="$ANCHOR" -v rule="$line" '
+  if ! awk -v anchor="$ANCHOR" -v rule="$line" '
     !done && $0 == anchor { print; print rule; done=1; next }
     { print }
-  ' "$RULES_FILE" >"$tmp"
+    END { exit done ? 0 : 1 }
+  ' "$RULES_FILE" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
   cat "$tmp" >"$RULES_FILE"
   rm -f "$tmp"
 }
@@ -175,10 +179,20 @@ set_limit() {
   read -rp "Записать навсегда? [y/N] " confirm
   [[ $confirm == [yY] ]] || { echo "Отменено."; return; }
 
-  backup_rules
+  if ! anchor_present; then
+    echo "В $RULES_FILE нет стандартной строки ESTABLISHED. Ничего не менял." >&2
+    return 1
+  fi
+
+  local bak="${RULES_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$RULES_FILE" "$bak"
   removed=$(drop_rules "$ip" "$port")
   line=$(rule_line "$ip" "$port" "$limit")
-  insert_rule "$line"
+  if ! insert_rule "$line"; then
+    cp "$bak" "$RULES_FILE"
+    echo "Записать не удалось, файл правил возвращён как был." >&2
+    return 1
+  fi
   echo "Записано. Прежних правил для этого адреса и порта снято: ${removed}."
   apply_reload
 }
