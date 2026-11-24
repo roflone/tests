@@ -65,20 +65,55 @@ ask_limit() {
   done
 }
 
+# Из сырых строк правил печатает: адрес порт число
+parse_limits() {
+  awk '
+    /connlimit/ {
+      ip = ""; port = ""; n = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i == "-d" && i < NF) { ip = $(i + 1); sub(/\/32$/, "", ip) }
+        if ($i == "--dport" && i < NF) port = $(i + 1)
+        if ($i == "--connlimit-above" && i < NF) n = $(i + 1)
+      }
+      if (ip != "" && port != "" && n != "") print ip, port, n
+    }
+  '
+}
+
+print_limits() {
+  local rows=$1 ip port n
+  if [[ -z $rows ]]; then
+    echo "  лимита нет"
+    return
+  fi
+  while read -r ip port n; do
+    [[ -n $ip ]] || continue
+    echo "  ${ip}, порт ${port}: с одного адреса не больше ${n} соединений"
+  done <<< "$rows"
+}
+
 show_limits() {
-  echo "В файле, сохранится после перезагрузки:"
-  if grep -n "connlimit" "$RULES_FILE" >/dev/null; then
-    grep -n "connlimit" "$RULES_FILE"
-  else
-    echo "  лимита нет"
+  local saved live
+  saved=$(grep "connlimit" "$RULES_FILE" | parse_limits || true)
+  live=$(iptables -S ufw-before-input 2>/dev/null | grep "connlimit" | parse_limits || true)
+
+  if [[ -z $saved && -z $live ]]; then
+    echo "Лимита нет. С одного адреса можно открывать сколько угодно соединений."
+    return
   fi
+
+  if [[ $saved == "$live" ]]; then
+    echo "Сейчас:"
+    print_limits "$saved"
+    echo "После перезагрузки останется так же."
+    return
+  fi
+
+  echo "Сейчас работает:"
+  print_limits "$live"
   echo
-  echo "Сейчас в ядре:"
-  if iptables -S ufw-before-input 2>/dev/null | grep -q "connlimit"; then
-    iptables -S ufw-before-input | grep "connlimit"
-  else
-    echo "  лимита нет"
-  fi
+  echo "После перезагрузки будет:"
+  print_limits "$saved"
 }
 
 rule_line() {
